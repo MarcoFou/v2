@@ -13,6 +13,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // MongoDB and mongoose connect
+mongoose.set('useFindAndModify', false);
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -26,8 +27,16 @@ mongoose.connect(process.env.MONGO_URI, {
 // Database schema
 const urlSchema = new mongoose.Schema({
   originalURL: String,
-  shortURL: String,
+  shortURL: Number,
 });
+
+// Counter for generating sequential short URLs
+const counterSchema = new mongoose.Schema({
+  _id: String,
+  seq: { type: Number, default: 0 }
+});
+
+const Counter = mongoose.model('Counter', counterSchema);
 
 const URL = mongoose.model('URL', urlSchema);
 
@@ -39,10 +48,19 @@ app.get('/', function (req, res) {
   res.sendFile(`${process.cwd()}/views/index.html`);
 });
 
+// Function to get next sequence number
+async function getNextSequence(name) {
+  const counter = await Counter.findByIdAndUpdate(
+    name,
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return counter.seq;
+}
+
 // Response for POST request
 app.post('/api/shorturl/new', async (req, res) => {
   const { url } = req.body;
-  const shortURL = shortID.generate();
   console.log(validURL.isUri(url));
   if (validURL.isWebUri(url) === undefined) {
     res.json({
@@ -66,19 +84,25 @@ app.post('/api/shorturl/new', async (req, res) => {
           short_url: findOne.shortURL,
         });
       } else {
-        findOne = new URL({
-          originalURL: url,
-          shortURL,
-        });
-        await findOne.save();
-        res.json({
-          original_url: findOne.originalURL,
-          short_url: findOne.shortURL,
-        });
+        try {
+          const shortURL = await getNextSequence('urlid');
+          findOne = new URL({
+            originalURL: url,
+            shortURL,
+          });
+          await findOne.save();
+          res.json({
+            original_url: findOne.originalURL,
+            short_url: findOne.shortURL,
+          });
+        } catch (seqErr) {
+          console.log('Sequence error:', seqErr);
+          res.status(500).json({ error: 'Server error generating short URL' });
+        }
       }
     } catch (err) {
-      console.log(err);
-      res.status(500).json('Server error..');
+      console.log('Database error:', err);
+      res.status(500).json({ error: 'Server error' });
     }
   }
 });
