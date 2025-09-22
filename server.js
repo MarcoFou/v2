@@ -10,7 +10,7 @@ const shortID = require('shortid');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
 // MongoDB and mongoose connect
 mongoose.connect(process.env.MONGO_URI, {
@@ -87,6 +87,6 @@ app.get('/api/shorturl/:shortURL?', async (req, res) => {
   }
 });
 // Listens for connections
-app.listen(port, function () {
-  console.log('Node.js listening ...');
+app.listen(port, '0.0.0.0', function () {
+  console.log(`Node.js listening on port ${port}...`);
 });
