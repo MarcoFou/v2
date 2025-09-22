@@ -16,6 +16,11 @@ const port = process.env.PORT || 5000;
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+}).then(() => {
+  console.log('Connected to MongoDB successfully');
+}).catch((err) => {
+  console.error('MongoDB connection error:', err.message);
+  console.log('Server will continue running but database features will be unavailable');
 });
 
 // Database schema
@@ -44,6 +49,13 @@ app.post('/api/shorturl/new', async (req, res) => {
       error: 'invalid url',
     });
   } else {
+    // Check if mongoose is connected
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        error: 'Database connection unavailable. Please check MongoDB Atlas network access settings.',
+      });
+    }
+    
     try {
       let findOne = await URL.findOne({
         originalURL: url,
@@ -73,6 +85,13 @@ app.post('/api/shorturl/new', async (req, res) => {
 
 // Redirect shortened URL to Original URL
 app.get('/api/shorturl/:shortURL?', async (req, res) => {
+  // Check if mongoose is connected
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      error: 'Database connection unavailable. Please check MongoDB Atlas network access settings.',
+    });
+  }
+  
   try {
     const urlParams = await URL.findOne({
       shortURL: req.params.shortURL,
