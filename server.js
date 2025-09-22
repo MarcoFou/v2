@@ -1,135 +1,127 @@
-/* eslint-disable no-unused-vars */
-/* eslint-disable no-undef */
 const express = require('express');
-const mongo = require('mongodb');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const validURL = require('valid-url');
-const shortID = require('shortid');
+const dns = require('dns');
+const { URL } = require('url');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 
-// MongoDB and mongoose connect
-mongoose.set('useFindAndModify', false);
-mongoose.connect(process.env.MONGO_URI, {
+// MongoDB connection
+mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/urlshortener', {
   useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => {
-  console.log('Connected to MongoDB successfully');
-}).catch((err) => {
-  console.error('MongoDB connection error:', err.message);
-  console.log('Server will continue running but database features will be unavailable');
-});
+  useUnifiedTopology: true
+}).catch(err => console.log('MongoDB connection error:', err.message));
 
-// Database schema
+// Schema
 const urlSchema = new mongoose.Schema({
-  originalURL: String,
-  shortURL: Number,
+  original_url: String,
+  short_url: Number
 });
 
-// Counter for generating sequential short URLs
-const counterSchema = new mongoose.Schema({
-  _id: String,
-  seq: { type: Number, default: 0 }
-});
+const Url = mongoose.model('Url', urlSchema);
 
-const Counter = mongoose.model('Counter', counterSchema);
-
-const URL = mongoose.model('URL', urlSchema);
-
-// App middleware
+// Middleware
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use('/public', express.static(`${process.cwd()}/public`));
-app.get('/', function (req, res) {
-  res.sendFile(`${process.cwd()}/views/index.html`);
+app.use(bodyParser.json());
+app.use('/public', express.static(process.cwd() + '/public'));
+
+app.get('/', function(req, res) {
+  res.sendFile(process.cwd() + '/views/index.html');
 });
 
-// Function to get next sequence number
-async function getNextSequence(name) {
-  const counter = await Counter.findByIdAndUpdate(
-    name,
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
-  );
-  return counter.seq;
-}
-
-// Response for POST request
-app.post('/api/shorturl/new', async (req, res) => {
+// CORREGIDO: Endpoint POST en /api/shorturl (no /api/shorturl/new)
+app.post('/api/shorturl', async function(req, res) {
   const { url } = req.body;
-  console.log(validURL.isUri(url));
-  if (validURL.isWebUri(url) === undefined) {
-    res.json({
-      error: 'invalid url',
-    });
-  } else {
-    // Check if mongoose is connected
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        error: 'Database connection unavailable. Please check MongoDB Atlas network access settings.',
-      });
+
+  console.log('Received URL:', url); // Debug
+
+  if (!url) {
+    return res.json({ error: 'invalid url' });
+  }
+
+  // Validate URL format
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return res.json({ error: 'invalid url' });
     }
-    
+  } catch (e) {
+    return res.json({ error: 'invalid url' });
+  }
+
+  // DNS validation
+  dns.lookup(parsedUrl.hostname, async (err) => {
+    if (err) {
+      return res.json({ error: 'invalid url' });
+    }
+
     try {
-      let findOne = await URL.findOne({
-        originalURL: url,
-      });
-      if (findOne) {
-        res.json({
-          original_url: findOne.originalURL,
-          short_url: findOne.shortURL,
+      // Check if URL already exists
+      const existingUrl = await Url.findOne({ original_url: url });
+      if (existingUrl) {
+        return res.json({
+          original_url: existingUrl.original_url,
+          short_url: existingUrl.short_url
         });
-      } else {
-        try {
-          const shortURL = await getNextSequence('urlid');
-          findOne = new URL({
-            originalURL: url,
-            shortURL,
-          });
-          await findOne.save();
-          res.json({
-            original_url: findOne.originalURL,
-            short_url: findOne.shortURL,
-          });
-        } catch (seqErr) {
-          console.log('Sequence error:', seqErr);
-          res.status(500).json({ error: 'Server error generating short URL' });
-        }
       }
-    } catch (err) {
-      console.log('Database error:', err);
-      res.status(500).json({ error: 'Server error' });
+
+      // Get count to generate sequential short_url
+      const count = await Url.countDocuments();
+      const short_url = count + 1;
+
+      // Create new URL entry
+      const newUrl = new Url({
+        original_url: url,
+        short_url: short_url
+      });
+
+      await newUrl.save();
+
+      res.json({
+        original_url: url,
+        short_url: short_url
+      });
+
+    } catch (dbError) {
+      console.error('Database error:', dbError);
+      res.json({ error: 'invalid url' });
     }
+  });
+});
+
+// GET endpoint - Redirect
+app.get('/api/shorturl/:short_url', async function(req, res) {
+  const short_url = parseInt(req.params.short_url);
+
+  console.log('Redirect request for short_url:', short_url); // Debug
+
+  if (isNaN(short_url)) {
+    return res.json({ error: 'invalid url' });
+  }
+
+  try {
+    const urlData = await Url.findOne({ short_url: short_url });
+    if (urlData) {
+      return res.redirect(urlData.original_url);
+    } else {
+      return res.json({ error: 'invalid url' });
+    }
+  } catch (error) {
+    return res.json({ error: 'invalid url' });
   }
 });
 
-// Redirect shortened URL to Original URL
-app.get('/api/shorturl/:shortURL?', async (req, res) => {
-  // Check if mongoose is connected
-  if (mongoose.connection.readyState !== 1) {
-    return res.status(503).json({
-      error: 'Database connection unavailable. Please check MongoDB Atlas network access settings.',
-    });
-  }
-  
-  try {
-    const urlParams = await URL.findOne({
-      shortURL: req.params.shortURL,
-    });
-    if (urlParams) {
-      return res.redirect(urlParams.originalURL);
-    }
-    return res.status(404).json('No URL found');
-  } catch (err) {
-    console.log(err);
-    res.status(500).json('Server error..');
-  }
+// Health check endpoint
+app.get('/api/hello', function(req, res) {
+  res.json({ greeting: 'hello API' });
 });
-// Listens for connections
-app.listen(port, '0.0.0.0', function () {
-  console.log(`Node.js listening on port ${port}...`);
+
+// Listener
+app.listen(port, function() {
+  console.log('Server listening on port ' + port);
 });
